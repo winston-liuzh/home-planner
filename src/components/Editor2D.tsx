@@ -1,5 +1,5 @@
 import { useRef, useCallback, useEffect, useState, useMemo } from 'react';
-import { Stage, Layer, Rect, Line, Circle, Group, Text, Ellipse, Shape } from 'react-konva';
+import { Stage, Layer, Rect, Line, Circle, Group, Text, Ellipse } from 'react-konva';
 import { usePlannerStore } from '../store/plannerStore';
 import type { KonvaEventObject } from 'konva/lib/Node';
 import type { PlacedFurniture, Wall, Point2D } from '../types';
@@ -8,6 +8,8 @@ const GRID_SIZE = 20;    // 小网格 20cm
 const GRID_MAJOR = 100;  // 大网格 100cm (1m)
 const MIN_SCALE = 0.15;
 const MAX_SCALE = 4;
+const SNAP_RADIUS = 15;  // 端点吸附半径 cm
+const WALL_HIT_WIDTH = 16; // 墙体点击热区宽度 cm
 
 export default function Editor2D() {
   const {
@@ -16,7 +18,7 @@ export default function Editor2D() {
     addWall, removeWall, moveWallPoint,
     setWallDrawingStart, setWallDrawingEnd,
     setPendingFurnitureModelId, addFurniture,
-    deleteSelected,
+    deleteSelected, updateWall,
   } = usePlannerStore();
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -27,6 +29,15 @@ export default function Editor2D() {
   const [mouseCm, setMouseCm] = useState<Point2D>({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
   const [panStart, setPanStart] = useState({ x: 0, y: 0 });
+
+  // Wall dragging state
+  const [wallDragging, setWallDragging] = useState<{
+    wallId: string;
+    type: 'point' | 'body';  // 拖端点 vs 拖整体
+    point?: 'start' | 'end'; // 拖哪个端点
+    startWallPos?: { start: Point2D; end: Point2D }; // body拖拽时的初始位置
+    dragOffset?: Point2D; // body拖拽时的鼠标偏移
+  } | null>(null);
 
   // Responsive canvas sizing
   useEffect(() => {
@@ -61,6 +72,7 @@ export default function Editor2D() {
         setPendingFurnitureModelId(null);
         setWallDrawingStart(null);
         setWallDrawingEnd(null);
+        setWallDragging(null);
       }
     };
     window.addEventListener('keydown', handler);
@@ -86,6 +98,37 @@ export default function Editor2D() {
     if (!pos) return { x: 0, y: 0 };
     return snapPoint(screenToCm(pos.x, pos.y));
   }, [screenToCm]);
+
+  // ===== 查找所有墙端点（用于吸附） =====
+  const allWallEndpoints = useMemo(() => {
+    const walls = project.rooms.flatMap(r => r.walls);
+    const points: Point2D[] = [];
+    walls.forEach(w => {
+      points.push(w.start, w.end);
+    });
+    return points;
+  }, [project.rooms]);
+
+  // 端点吸附：找到最近的已有端点
+  const snapToEndpoint = useCallback((p: Point2D): Point2D => {
+    let closest = p;
+    let minDist = SNAP_RADIUS;
+    for (const ep of allWallEndpoints) {
+      const dist = Math.sqrt((ep.x - p.x) ** 2 + (ep.y - p.y) ** 2);
+      if (dist < minDist) {
+        minDist = dist;
+        closest = ep;
+      }
+    }
+    return closest;
+  }, [allWallEndpoints]);
+
+  // 综合吸附：先网格，再端点（端点优先）
+  const smartSnap = useCallback((p: Point2D): Point2D => {
+    const gridSnapped = snapPoint(p);
+    const epSnapped = snapToEndpoint(gridSnapped);
+    return epSnapped;
+  }, [snapPoint, snapToEndpoint]);
 
   // Wheel zoom
   const handleWheel = useCallback((e: KonvaEventObject<WheelEvent>) => {
@@ -142,11 +185,23 @@ export default function Editor2D() {
       return;
     }
 
-    // Wall drawing preview
+    // Wall drawing preview — 实时跟随鼠标，吸附到网格和端点
     if (toolMode === 'wall' && wallDrawing.start) {
-      setWallDrawingEnd(getPointerCm());
+      const rawCm = screenToCm(e.evt.clientX - (containerRef.current?.getBoundingClientRect().left ?? 0), e.evt.clientY - (containerRef.current?.getBoundingClientRect().top ?? 0));
+      setWallDrawingEnd(smartSnap(rawCm));
     }
-  }, [isPanning, panStart, screenToCm, toolMode, wallDrawing, getPointerCm, setWallDrawingEnd]);
+
+    // Wall body drag — 实时移动整面墙
+    if (wallDragging?.type === 'body' && wallDragging.startWallPos) {
+      const cm = getPointerCm();
+      const dx = cm.x - (wallDragging.dragOffset?.x ?? 0) - wallDragging.startWallPos.start.x;
+      const dy = cm.y - (wallDragging.dragOffset?.y ?? 0) - wallDragging.startWallPos.start.y;
+      const newStart = snapPoint({ x: wallDragging.startWallPos.start.x + dx, y: wallDragging.startWallPos.start.y + dy });
+      const newEnd = snapPoint({ x: wallDragging.startWallPos.end.x + dx, y: wallDragging.startWallPos.end.y + dy });
+      // 实时更新墙位置
+      updateWall(wallDragging.wallId, { start: newStart, end: newEnd });
+    }
+  }, [isPanning, panStart, screenToCm, toolMode, wallDrawing, getPointerCm, setWallDrawingEnd, smartSnap, wallDragging, updateWall]);
 
   const handleMouseUp = useCallback((e: KonvaEventObject<MouseEvent>) => {
     if (e.evt.button === 1 || e.evt.button === 2) {
@@ -154,41 +209,72 @@ export default function Editor2D() {
     }
   }, []);
 
-  // Stage click — tool actions
-  const handleStageClick = useCallback((e: KonvaEventObject<MouseEvent>) => {
-    // Ignore right/middle clicks
+  // ===== Planner 5D 风格画墙：按下拖拽松手 =====
+  const handleStageMouseDown = useCallback((e: KonvaEventObject<MouseEvent>) => {
+    // 只处理左键
     if (e.evt.button !== 0) return;
-    // Ignore clicks on shapes (handled by shape clicks)
+    // 只在画墙模式下生效
+    if (toolMode !== 'wall') return;
+    // 忽略点击到图形上的情况
     const clickedOnEmpty = e.target === e.target.getStage();
-    if (!clickedOnEmpty && toolMode === 'select') return;
+    if (!clickedOnEmpty) return;
+
+    const rawCm = screenToCm(
+      e.evt.clientX - (containerRef.current?.getBoundingClientRect().left ?? 0),
+      e.evt.clientY - (containerRef.current?.getBoundingClientRect().top ?? 0)
+    );
+    const start = smartSnap(rawCm);
+    setWallDrawingStart(start);
+    setWallDrawingEnd(start); // 初始end = start
+  }, [toolMode, screenToCm, smartSnap, setWallDrawingStart, setWallDrawingEnd]);
+
+  const handleStageMouseUp = useCallback((e: KonvaEventObject<MouseEvent>) => {
+    if (e.evt.button !== 0) return;
+
+    // 画墙模式：松手确认
+    if (toolMode === 'wall' && wallDrawing.start && wallDrawing.end) {
+      const dx = wallDrawing.end.x - wallDrawing.start.x;
+      const dy = wallDrawing.end.y - wallDrawing.start.y;
+      const len = Math.sqrt(dx * dx + dy * dy);
+      // 至少 20cm 才算有效墙段
+      if (len >= 20) {
+        addWall(wallDrawing.start, wallDrawing.end);
+        // Planner 5D 风格：连续画墙，终点自动成为下一段起点
+        setWallDrawingStart(wallDrawing.end);
+      } else {
+        setWallDrawingStart(null);
+      }
+      setWallDrawingEnd(null);
+      return;
+    }
+
+    // 墙体body拖拽结束
+    if (wallDragging?.type === 'body') {
+      setWallDragging(null);
+    }
+  }, [toolMode, wallDrawing, addWall, setWallDrawingStart, setWallDrawingEnd, wallDragging]);
+
+  // Stage click — 工具分发
+  const handleStageClick = useCallback((e: KonvaEventObject<MouseEvent>) => {
+    if (e.evt.button !== 0) return;
+    const clickedOnEmpty = e.target === e.target.getStage();
     if (!clickedOnEmpty) return;
 
     const cm = getPointerCm();
 
-    if (toolMode === 'wall') {
-      if (!wallDrawing.start) {
-        setWallDrawingStart(cm);
-      } else {
-        addWall(wallDrawing.start, cm);
-        // Continue drawing: new start = previous end
-        setWallDrawingStart(cm);
-        setWallDrawingEnd(null);
-      }
-      return;
-    }
-
+    // 家具放置
     if (toolMode === 'furniture' && pendingFurnitureModelId) {
       addFurniture(pendingFurnitureModelId, cm);
-      // Keep the model selected for continuous placement
       return;
     }
 
+    // 选择模式：点空白取消选择
     if (toolMode === 'select') {
       selectItem(null);
     }
-  }, [toolMode, wallDrawing, getPointerCm, addWall, setWallDrawingStart, setWallDrawingEnd, pendingFurnitureModelId, addFurniture, selectItem]);
+  }, [toolMode, pendingFurnitureModelId, getPointerCm, addFurniture, selectItem]);
 
-  // Drag & Drop from furniture panel
+  // 家具拖拽放置
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     const modelId = e.dataTransfer.getData('furniture-model-id');
@@ -201,24 +287,71 @@ export default function Editor2D() {
     setPendingFurnitureModelId(null);
   }, [screenToCm, addFurniture, setPendingFurnitureModelId]);
 
-  // Furniture drag end
+  // 家具拖拽结束
   const handleFurnitureDragEnd = useCallback((id: string, e: KonvaEventObject<DragEvent>) => {
     const node = e.target;
     const pos = snapPoint({ x: node.x(), y: node.y() });
     moveFurniture(id, pos);
   }, [moveFurniture]);
 
-  // Wall endpoint drag
-  const handleWallPointDragEnd = useCallback((wallId: string, point: 'start' | 'end', e: KonvaEventObject<DragEvent>) => {
+  // ===== 墙体端点拖拽 =====
+  const handleWallPointDragStart = useCallback((wallId: string, point: 'start' | 'end') => {
+    setWallDragging({ wallId, type: 'point', point });
+    selectItem({ type: 'wall', id: wallId });
+  }, [selectItem]);
+
+  const handleWallPointDragMove = useCallback((wallId: string, point: 'start' | 'end', e: KonvaEventObject<DragEvent>) => {
     const node = e.target;
-    const pos = snapPoint({ x: node.x(), y: node.y() });
-    moveWallPoint(wallId, point, pos);
-  }, [moveWallPoint]);
+    const rawPos = { x: node.x(), y: node.y() };
+    // 吸附到网格和已有端点
+    const snapped = smartSnap(rawPos);
+    node.x(snapped.x);
+    node.y(snapped.y);
+    moveWallPoint(wallId, point, snapped);
+
+    // 联动：查找连接到这个端点的其他墙，也移动它们的端点
+    const walls = project.rooms.flatMap(r => r.walls);
+    const currentWall = walls.find(w => w.id === wallId);
+    if (!currentWall) return;
+    const movedPoint = point === 'start' ? currentWall.start : currentWall.end;
+    const otherPoint = point === 'start' ? currentWall.end : currentWall.start;
+
+    walls.forEach(w => {
+      if (w.id === wallId) return;
+      // 检查其他墙的端点是否与被拖端点重合（原始位置接近）
+      const threshold = 2; // 2cm阈值
+      if (Math.abs(w.start.x - movedPoint.x) < threshold && Math.abs(w.start.y - movedPoint.y) < threshold) {
+        // 这个墙的start端点也跟着移动
+        moveWallPoint(w.id, 'start', snapped);
+      }
+      if (Math.abs(w.end.x - movedPoint.x) < threshold && Math.abs(w.end.y - movedPoint.y) < threshold) {
+        moveWallPoint(w.id, 'end', snapped);
+      }
+    });
+  }, [smartSnap, moveWallPoint, project.rooms]);
+
+  const handleWallPointDragEnd = useCallback(() => {
+    setWallDragging(null);
+  }, []);
+
+  // ===== 墙体整体拖拽 =====
+  const handleWallBodyDragStart = useCallback((wallId: string, e: KonvaEventObject<DragEvent>) => {
+    const walls = project.rooms.flatMap(r => r.walls);
+    const wall = walls.find(w => w.id === wallId);
+    if (!wall) return;
+    const cm = getPointerCm();
+    setWallDragging({
+      wallId,
+      type: 'body',
+      startWallPos: { start: { ...wall.start }, end: { ...wall.end } },
+      dragOffset: { x: cm.x - wall.start.x, y: cm.y - wall.start.y },
+    });
+    selectItem({ type: 'wall', id: wallId });
+  }, [project.rooms, getPointerCm, selectItem]);
 
   // Grid rendering
   const gridLayer = useMemo(() => {
     const lines: React.ReactNode[] = [];
-    // Determine visible range
     const viewLeft = -stagePos.x / stageScale;
     const viewTop = -stagePos.y / stageScale;
     const viewRight = viewLeft + stageSize.width / stageScale;
@@ -229,7 +362,6 @@ export default function Editor2D() {
     const startY = Math.floor(viewTop / GRID_SIZE) * GRID_SIZE - GRID_SIZE;
     const endY = Math.ceil(viewBottom / GRID_SIZE) * GRID_SIZE + GRID_SIZE;
 
-    // Minor grid lines (every 20cm)
     if (stageScale > 0.4) {
       for (let x = startX; x <= endX; x += GRID_SIZE) {
         lines.push(
@@ -243,7 +375,6 @@ export default function Editor2D() {
       }
     }
 
-    // Major grid lines (every 100cm = 1m)
     const majorStart = Math.floor(viewLeft / GRID_MAJOR) * GRID_MAJOR - GRID_MAJOR;
     const majorEnd = Math.ceil(viewRight / GRID_MAJOR) * GRID_MAJOR + GRID_MAJOR;
     const majorStartY = Math.floor(viewTop / GRID_MAJOR) * GRID_MAJOR - GRID_MAJOR;
@@ -297,6 +428,14 @@ export default function Editor2D() {
   const selectedWall = selection?.type === 'wall' ? walls.find(w => w.id === selection.id) : null;
   const selectedFurniture = selection?.type === 'furniture' ? project.furniture.find(f => f.id === selection.id) : null;
 
+  // 墙体模式光标
+  const getCursor = () => {
+    if (isPanning) return 'grabbing';
+    if (toolMode === 'wall') return 'crosshair';
+    if (toolMode === 'furniture') return 'crosshair';
+    return 'default';
+  };
+
   return (
     <div
       className="editor-2d"
@@ -315,10 +454,10 @@ export default function Editor2D() {
         y={stagePos.y}
         onClick={handleStageClick}
         onMouseMove={handleMouseMove}
-        onMouseDown={handleMouseDown}
-        onMouseUp={handleMouseUp}
+        onMouseDown={(e) => { handleMouseDown(e); handleStageMouseDown(e); }}
+        onMouseUp={(e) => { handleMouseUp(e); handleStageMouseUp(e); }}
         onWheel={handleWheel}
-        style={{ cursor: toolMode === 'wall' || toolMode === 'furniture' ? 'crosshair' : isPanning ? 'grabbing' : 'default' }}
+        style={{ cursor: getCursor() }}
       >
         <Layer>
           {/* Grid */}
@@ -337,30 +476,26 @@ export default function Editor2D() {
               isSelected={selection?.type === 'wall' && selection.id === wall.id}
               scale={stageScale}
               onSelect={() => selectItem({ type: 'wall', id: wall.id })}
-              onPointDragEnd={(point, e) => handleWallPointDragEnd(wall.id, point, e)}
+              onPointDragStart={(point) => handleWallPointDragStart(wall.id, point)}
+              onPointDragMove={(point, e) => handleWallPointDragMove(wall.id, point, e)}
+              onPointDragEnd={handleWallPointDragEnd}
+              onBodyDragStart={(e) => handleWallBodyDragStart(wall.id, e)}
               onDelete={() => removeWall(wall.id)}
             />
           ))}
 
-          {/* Wall drawing preview */}
-          {wallDrawing.start && (
+          {/* Wall drawing preview — Planner 5D 风格：按下拖拽实时预览 */}
+          {wallDrawing.start && wallDrawing.end && (
             <>
               <Line
-                points={[wallDrawing.start.x, wallDrawing.start.y,
-                  (wallDrawing.end?.x ?? wallDrawing.start.x),
-                  (wallDrawing.end?.y ?? wallDrawing.start.y)]}
+                points={[wallDrawing.start.x, wallDrawing.start.y, wallDrawing.end.x, wallDrawing.end.y]}
                 stroke="#FF6B35"
                 strokeWidth={3 / stageScale}
                 dash={[8 / stageScale, 4 / stageScale]}
               />
-              <Circle x={wallDrawing.start.x} y={wallDrawing.start.y} radius={5 / stageScale} fill="#FF6B35" />
-              {wallDrawing.end && (
-                <Circle x={wallDrawing.end.x} y={wallDrawing.end.y} radius={5 / stageScale} fill="#FF6B35" />
-              )}
-              {/* Wall length label */}
-              {wallDrawing.end && (
-                <WallLengthLabel start={wallDrawing.start} end={wallDrawing.end} scale={stageScale} />
-              )}
+              <Circle x={wallDrawing.start.x} y={wallDrawing.start.y} radius={6 / stageScale} fill="#FF6B35" stroke="#FFF" strokeWidth={1.5 / stageScale} />
+              <Circle x={wallDrawing.end.x} y={wallDrawing.end.y} radius={6 / stageScale} fill="#FF6B35" stroke="#FFF" strokeWidth={1.5 / stageScale} />
+              <WallLengthLabel start={wallDrawing.start} end={wallDrawing.end} scale={stageScale} />
             </>
           )}
 
@@ -386,7 +521,7 @@ export default function Editor2D() {
         <span>缩放: {Math.round(stageScale * 100)}%</span>
         <span>工具: {toolMode === 'wall' ? '画墙' : toolMode === 'furniture' ? '放家具' : '选择'}</span>
         <span className="status-hint">
-          {toolMode === 'wall' ? '点击画布设起点和终点，Esc取消' :
+          {toolMode === 'wall' ? '按住拖拽画墙 | 连续画 | Esc结束' :
            toolMode === 'furniture' ? '点击画布放置家具，Esc取消' :
            '滚轮缩放 | 中键/右键拖拽平移 | Delete删除 | R旋转'}
         </span>
@@ -400,16 +535,20 @@ function WallLengthLabel({ start, end, scale }: { start: Point2D; end: Point2D; 
   const dx = end.x - start.x;
   const dy = end.y - start.y;
   const len = Math.sqrt(dx * dx + dy * dy);
+  if (len < 1) return null;
   const midX = (start.x + end.x) / 2;
   const midY = (start.y + end.y) / 2;
   const angle = Math.atan2(dy, dx) * 180 / Math.PI;
 
+  // 旋转角度保持在可读范围(-90~90)
+  const readableAngle = angle > 90 ? angle - 180 : angle < -90 ? angle + 180 : angle;
+
   return (
-    <Group x={midX} y={midY} rotation={angle}>
+    <Group x={midX} y={midY} rotation={readableAngle}>
       <Rect
         x={-25 / scale} y={-12 / scale}
         width={50 / scale} height={14 / scale}
-        fill="rgba(0,0,0,0.7)" cornerRadius={3 / scale}
+        fill="rgba(0,0,0,0.75)" cornerRadius={3 / scale}
       />
       <Text
         text={`${Math.round(len)}cm`}
@@ -425,57 +564,106 @@ function WallLengthLabel({ start, end, scale }: { start: Point2D; end: Point2D; 
   );
 }
 
-// ===== Wall rendering with selectable endpoints =====
+// ===== Wall rendering — Planner 5D 风格 =====
 function WallShape({
-  wall, isSelected, scale, onSelect, onPointDragEnd, onDelete,
+  wall, isSelected, scale, onSelect,
+  onPointDragStart, onPointDragMove, onPointDragEnd,
+  onBodyDragStart, onDelete,
 }: {
   wall: Wall;
   isSelected: boolean;
   scale: number;
   onSelect: () => void;
-  onPointDragEnd: (point: 'start' | 'end', e: KonvaEventObject<DragEvent>) => void;
+  onPointDragStart: (point: 'start' | 'end') => void;
+  onPointDragMove: (point: 'start' | 'end', e: KonvaEventObject<DragEvent>) => void;
+  onPointDragEnd: () => void;
+  onBodyDragStart: (e: KonvaEventObject<DragEvent>) => void;
   onDelete: () => void;
 }) {
   const thickness = Math.max(wall.thickness, 4 / scale);
+  const midX = (wall.start.x + wall.end.x) / 2;
+  const midY = (wall.start.y + wall.end.y) / 2;
 
   return (
     <Group>
-      {/* Wall line */}
+      {/* 墙体主体 — 可拖拽整体移动 */}
       <Line
         points={[wall.start.x, wall.start.y, wall.end.x, wall.end.y]}
-        stroke={isSelected ? '#FF6B35' : '#555'}
+        stroke={isSelected ? '#FF6B35' : '#777'}
         strokeWidth={thickness}
         lineCap="square"
-        hitStrokeWidth={20 / scale}
-        onClick={onSelect}
+        hitStrokeWidth={WALL_HIT_WIDTH}
+        onClick={(e) => { e.cancelBubble = true; onSelect(); }}
+        onMouseEnter={(e) => { const stage = e.target.getStage(); if (stage) stage.container().style.cursor = 'move'; }}
+        onMouseLeave={(e) => { const stage = e.target.getStage(); if (stage) stage.container().style.cursor = 'default'; }}
       />
-      {/* Wall length label */}
+
+      {/* 墙体长度标注 — 始终显示 */}
       <WallLengthLabel start={wall.start} end={wall.end} scale={scale} />
-      {/* Editable endpoints when selected */}
+
+      {/* 选中时显示端点和操作 */}
       {isSelected && (
         <>
+          {/* 端点 — 可拖拽，带吸附 */}
           <Circle
             x={wall.start.x} y={wall.start.y}
-            radius={6 / scale} fill="#FF6B35" stroke="#FFF" strokeWidth={1.5 / scale}
+            radius={7 / scale} fill="#FF6B35" stroke="#FFF" strokeWidth={2 / scale}
             draggable
-            onDragEnd={(e) => onPointDragEnd('start', e)}
+            onDragStart={() => onPointDragStart('start')}
+            onDragMove={(e) => onPointDragMove('start', e)}
+            onDragEnd={onPointDragEnd}
+            onMouseEnter={(e) => { const stage = e.target.getStage(); if (stage) stage.container().style.cursor = 'crosshair'; }}
+            onMouseLeave={(e) => { const stage = e.target.getStage(); if (stage) stage.container().style.cursor = 'move'; }}
           />
           <Circle
             x={wall.end.x} y={wall.end.y}
-            radius={6 / scale} fill="#FF6B35" stroke="#FFF" strokeWidth={1.5 / scale}
+            radius={7 / scale} fill="#FF6B35" stroke="#FFF" strokeWidth={2 / scale}
             draggable
-            onDragEnd={(e) => onPointDragEnd('end', e)}
+            onDragStart={() => onPointDragStart('end')}
+            onDragMove={(e) => onPointDragMove('end', e)}
+            onDragEnd={onPointDragEnd}
+            onMouseEnter={(e) => { const stage = e.target.getStage(); if (stage) stage.container().style.cursor = 'crosshair'; }}
+            onMouseLeave={(e) => { const stage = e.target.getStage(); if (stage) stage.container().style.cursor = 'move'; }}
           />
-          {/* Delete button */}
+
+          {/* 墙体整体拖拽区域提示线（虚线边框） */}
+          <Line
+            points={[wall.start.x, wall.start.y, wall.end.x, wall.end.y]}
+            stroke="rgba(255,107,53,0.3)"
+            strokeWidth={thickness + 8 / scale}
+            lineCap="square"
+            dash={[6 / scale, 4 / scale]}
+            onClick={(e) => { e.cancelBubble = true; onSelect(); }}
+          />
+
+          {/* 删除按钮 */}
           <Group
-            x={(wall.start.x + wall.end.x) / 2}
-            y={(wall.start.y + wall.end.y) / 2 - 20 / scale}
+            x={midX}
+            y={midY - thickness / 2 - 18 / scale}
             onClick={(e) => { e.cancelBubble = true; onDelete(); }}
+            onMouseEnter={(e) => { const stage = e.target.getStage(); if (stage) stage.container().style.cursor = 'pointer'; }}
+            onMouseLeave={(e) => { const stage = e.target.getStage(); if (stage) stage.container().style.cursor = 'default'; }}
           >
-            <Rect x={-8 / scale} y={-8 / scale} width={16 / scale} height={16 / scale}
+            <Rect x={-10 / scale} y={-8 / scale} width={20 / scale} height={16 / scale}
               fill="#E94560" cornerRadius={3 / scale} />
-            <Text text="✕" fontSize={10 / scale} fill="#FFF"
+            <Text text="✕" fontSize={11 / scale} fill="#FFF"
               x={-5 / scale} y={-7 / scale} />
+          </Group>
+
+          {/* 墙体厚度标注 */}
+          <Group x={midX} y={midY}>
+            <Rect
+              x={-20 / scale} y={thickness / 2 + 2 / scale}
+              width={40 / scale} height={12 / scale}
+              fill="rgba(0,0,0,0.6)" cornerRadius={2 / scale}
+            />
+            <Text
+              text={`${wall.thickness}cm`}
+              fontSize={8 / scale} fill="#AAA"
+              width={40 / scale} height={12 / scale}
+              align="center" verticalAlign="middle"
+              x={-20 / scale} y={thickness / 2 + 2 / scale}
+            />
           </Group>
         </>
       )}
@@ -546,7 +734,7 @@ function FurnitureShape({
         strokeWidth={0.3 / scale}
       />
 
-      {/* Dimension label (always visible when large enough) */}
+      {/* Dimension label */}
       {(w * scale > 40 && d * scale > 25) && (
         <Text
           text={`${Math.round(w)}×${Math.round(d)}`}
