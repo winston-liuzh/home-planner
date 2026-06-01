@@ -18,7 +18,7 @@ export default function Toolbar() {
   return (
     <div className="toolbar">
       <div className="toolbar-section">
-        <span className="toolbar-title">Home Planner</span>
+        <span className="toolbar-title">🏠 Home Planner</span>
       </div>
       <div className="toolbar-section">
         <span className="section-label">视图</span>
@@ -48,6 +48,13 @@ export default function Toolbar() {
             <span className="btn-label">{t.label}</span>
           </button>
         ))}
+      </div>
+      <div className="toolbar-divider" />
+      <div className="toolbar-section toolbar-hints">
+        <span>滚轮缩放</span>
+        <span>中键平移</span>
+        <span>R旋转</span>
+        <span>Del删除</span>
       </div>
     </div>
   );

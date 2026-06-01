@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { v4 as uuid } from 'uuid';
-import type { Project, ViewMode, ToolMode, PlacedFurniture, Wall, Point2D, FurnitureModel } from '../types';
+import type { Project, ViewMode, ToolMode, PlacedFurniture, Wall, Point2D, FurnitureModel, Selection } from '../types';
 
 // ===== 家具模型库 =====
 export const FURNITURE_LIBRARY: FurnitureModel[] = [
@@ -31,28 +31,34 @@ interface PlannerState {
   project: Project;
   viewMode: ViewMode;
   toolMode: ToolMode;
-  selectedId: string | null;
+  selection: Selection | null;
+  pendingFurnitureModelId: string | null; // 待放置的家具模型ID
   wallDrawing: { start: Point2D | null; end: Point2D | null };
 
   setViewMode: (mode: ViewMode) => void;
   setToolMode: (mode: ToolMode) => void;
-  selectItem: (id: string | null) => void;
+  selectItem: (sel: Selection | null) => void;
+  setPendingFurnitureModelId: (id: string | null) => void;
 
   // Wall
   addWall: (start: Point2D, end: Point2D) => void;
   removeWall: (id: string) => void;
   updateWall: (id: string, updates: Partial<Wall>) => void;
+  moveWallPoint: (wallId: string, point: 'start' | 'end', pos: Point2D) => void;
 
   // Furniture
   addFurniture: (modelId: string, position: Point2D) => void;
   removeFurniture: (id: string) => void;
   moveFurniture: (id: string, position: Point2D) => void;
   rotateFurniture: (id: string, angle: number) => void;
-  resizeFurniture: (id: string, scaleX: number, scaleZ: number) => void;
+  resizeFurniture: (id: string, width: number, depth: number) => void;
 
   // Wall drawing
   setWallDrawingStart: (p: Point2D | null) => void;
   setWallDrawingEnd: (p: Point2D | null) => void;
+
+  // Delete selected
+  deleteSelected: () => void;
 }
 
 const defaultProject: Project = {
@@ -64,16 +70,18 @@ const defaultProject: Project = {
   updatedAt: Date.now(),
 };
 
-export const usePlannerStore = create<PlannerState>((set) => ({
+export const usePlannerStore = create<PlannerState>((set, get) => ({
   project: defaultProject,
   viewMode: '2d',
   toolMode: 'select',
-  selectedId: null,
+  selection: null,
+  pendingFurnitureModelId: null,
   wallDrawing: { start: null, end: null },
 
   setViewMode: (mode) => set({ viewMode: mode }),
-  setToolMode: (mode) => set({ toolMode: mode, selectedId: null }),
-  selectItem: (id) => set({ selectedId: id }),
+  setToolMode: (mode) => set({ toolMode: mode, selection: null, pendingFurnitureModelId: null, wallDrawing: { start: null, end: null } }),
+  selectItem: (sel) => set({ selection: sel }),
+  setPendingFurnitureModelId: (id) => set({ pendingFurnitureModelId: id, toolMode: id ? 'furniture' : 'select' }),
 
   addWall: (start, end) =>
     set((s) => ({
@@ -100,6 +108,7 @@ export const usePlannerStore = create<PlannerState>((set) => ({
         })),
         updatedAt: Date.now(),
       },
+      selection: s.selection?.id === id ? null : s.selection,
     })),
 
   updateWall: (id, updates) =>
@@ -114,6 +123,24 @@ export const usePlannerStore = create<PlannerState>((set) => ({
       },
     })),
 
+  moveWallPoint: (wallId, point, pos) =>
+    set((s) => ({
+      project: {
+        ...s.project,
+        rooms: s.project.rooms.map((r) => ({
+          ...r,
+          walls: r.walls.map((w) =>
+            w.id === wallId
+              ? point === 'start'
+                ? { ...w, start: pos }
+                : { ...w, end: pos }
+              : w
+          ),
+        })),
+        updatedAt: Date.now(),
+      },
+    })),
+
   addFurniture: (modelId, position) => {
     const model = FURNITURE_LIBRARY.find((m) => m.id === modelId);
     if (!model) return;
@@ -123,8 +150,6 @@ export const usePlannerStore = create<PlannerState>((set) => ({
       name: model.name,
       position,
       rotation: 0,
-      scaleX: 1,
-      scaleZ: 1,
       width: model.width,
       depth: model.depth,
       height: model.height,
@@ -137,6 +162,7 @@ export const usePlannerStore = create<PlannerState>((set) => ({
         furniture: [...s.project.furniture, item],
         updatedAt: Date.now(),
       },
+      selection: { type: 'furniture', id: item.id },
     }));
   },
 
@@ -147,7 +173,7 @@ export const usePlannerStore = create<PlannerState>((set) => ({
         furniture: s.project.furniture.filter((f) => f.id !== id),
         updatedAt: Date.now(),
       },
-      selectedId: s.selectedId === id ? null : s.selectedId,
+      selection: s.selection?.id === id ? null : s.selection,
     })),
 
   moveFurniture: (id, position) =>
@@ -166,18 +192,18 @@ export const usePlannerStore = create<PlannerState>((set) => ({
       project: {
         ...s.project,
         furniture: s.project.furniture.map((f) =>
-          f.id === id ? { ...f, rotation: angle } : f
+          f.id === id ? { ...f, rotation: ((angle % 360) + 360) % 360 } : f
         ),
         updatedAt: Date.now(),
       },
     })),
 
-  resizeFurniture: (id, scaleX, scaleZ) =>
+  resizeFurniture: (id, width, depth) =>
     set((s) => ({
       project: {
         ...s.project,
         furniture: s.project.furniture.map((f) =>
-          f.id === id ? { ...f, scaleX, scaleZ, width: f.width * scaleX, depth: f.depth * scaleZ } : f
+          f.id === id ? { ...f, width, depth } : f
         ),
         updatedAt: Date.now(),
       },
@@ -185,4 +211,11 @@ export const usePlannerStore = create<PlannerState>((set) => ({
 
   setWallDrawingStart: (p) => set((s) => ({ wallDrawing: { ...s.wallDrawing, start: p } })),
   setWallDrawingEnd: (p) => set((s) => ({ wallDrawing: { ...s.wallDrawing, end: p } })),
+
+  deleteSelected: () => {
+    const { selection, removeFurniture, removeWall } = get();
+    if (!selection) return;
+    if (selection.type === 'furniture') removeFurniture(selection.id);
+    else if (selection.type === 'wall') removeWall(selection.id);
+  },
 }));

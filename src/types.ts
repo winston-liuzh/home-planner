@@ -1,8 +1,9 @@
 // ===== 核心数据类型 =====
+// 坐标系统：所有位置/尺寸统一用 cm（厘米）
 
 export interface Point2D {
-  x: number;
-  y: number;
+  x: number; // cm
+  y: number; // cm
 }
 
 export interface Point3D {
@@ -42,10 +43,8 @@ export interface PlacedFurniture {
   id: string;
   modelId: string;
   name: string;
-  position: Point2D;  // 2D编辑中的位置
+  position: Point2D;  // 中心点位置 cm
   rotation: number;   // 角度
-  scaleX: number;
-  scaleZ: number;
   width: number;      // cm
   depth: number;      // cm
   height: number;     // cm
@@ -63,4 +62,10 @@ export interface Project {
 }
 
 export type ViewMode = '2d' | '3d';
-export type ToolMode = 'select' | 'wall' | 'furniture' | 'room';
+export type ToolMode = 'select' | 'wall' | 'furniture';
+export type SelectedType = 'furniture' | 'wall';
+
+export interface Selection {
+  type: SelectedType;
+  id: string;
+}
