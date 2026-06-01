@@ -62,7 +62,7 @@ export default function PropertyPanel() {
             type="number"
             className="prop-input"
             value={Math.round(item.depth)}
-            onChange={(e) => resizeFurniture(item.id, item.width, Math.max(20, +e.target.value)))}
+            onChange={(e) => resizeFurniture(item.id, item.width, Math.max(20, +e.target.value))}
           />
         </div>
         <div className="prop-group">
