@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
 jobs:
   build:
     strategy:
@@ -57,4 +60,24 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: HomePlanner-${{ matrix.platform }}
-          path: release/**/*
+          path: |
+            release/*.zip
+            release/*.dmg
+            release/*.exe
+            release/*.AppImage
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true
