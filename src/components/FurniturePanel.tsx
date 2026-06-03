@@ -6,7 +6,8 @@ const categories = [...new Set(FURNITURE_LIBRARY.map((f) => f.category))];
 
 export default function FurniturePanel() {
   const [activeCategory, setActiveCategory] = useState(categories[0]);
-  const { toolMode, setPendingFurnitureModelId, pendingFurnitureModelId } = usePlannerStore();
+  const setPendingFurnitureModelId = usePlannerStore((s) => s.setPendingFurnitureModelId);
+  const pendingFurnitureModelId = usePlannerStore((s) => s.pendingFurnitureModelId);
   const filtered = FURNITURE_LIBRARY.filter((f) => f.category === activeCategory);
 
   const handleDragStart = (e: React.DragEvent, model: FurnitureModel) => {

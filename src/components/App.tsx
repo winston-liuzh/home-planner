@@ -6,8 +6,10 @@ import PropertyPanel from './PropertyPanel';
 import { usePlannerStore } from '../store/plannerStore';
 
 export default function App() {
-  const { viewMode, project } = usePlannerStore();
-  const wallCount = project.rooms.reduce((n, r) => n + r.walls.length, 0);
+  const viewMode = usePlannerStore((s) => s.viewMode);
+  const projectName = usePlannerStore((s) => s.project.name);
+  const furnitureCount = usePlannerStore((s) => s.project.furniture.length);
+  const wallCount = usePlannerStore((s) => s.project.rooms.reduce((n, r) => n + r.walls.length, 0));
 
   return (
     <div className="app">
@@ -20,8 +22,8 @@ export default function App() {
         <PropertyPanel />
       </div>
       <div className="status-bar">
-        <span>项目: {project.name}</span>
-        <span>🪑 {project.furniture.length} 件家具</span>
+        <span>项目: {projectName}</span>
+        <span>🪑 {furnitureCount} 件家具</span>
         <span>🧱 {wallCount} 面墙</span>
         <span>坐标单位: cm</span>
       </div>

@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls, Grid, PerspectiveCamera, Text } from '@react-three/drei';
 import { usePlannerStore } from '../store/plannerStore';
@@ -6,7 +7,9 @@ import type { PlacedFurniture, Wall as WallType } from '../types';
 const CM_TO_UNIT = 0.01;
 
 export default function Editor3D() {
-  const { project, selection, selectItem } = usePlannerStore();
+  const project = usePlannerStore((s) => s.project);
+  const selection = usePlannerStore((s) => s.selection);
+  const selectItem = usePlannerStore((s) => s.selectItem);
   const walls = project.rooms.flatMap((r) => r.walls);
 
   return (
@@ -47,7 +50,12 @@ export default function Editor3D() {
         </mesh>
 
         {walls.map((wall) => (
-          <Wall3D key={wall.id} wall={wall} />
+          <Wall3D
+            key={wall.id}
+            wall={wall}
+            isSelected={selection?.type === 'wall' && selection.id === wall.id}
+            onSelect={() => selectItem({ type: 'wall', id: wall.id })}
+          />
         ))}
 
         {project.furniture.map((item) => (
@@ -63,7 +71,7 @@ export default function Editor3D() {
   );
 }
 
-function Wall3D({ wall }: { wall: WallType }) {
+function Wall3D({ wall, isSelected, onSelect }: { wall: WallType; isSelected: boolean; onSelect: () => void }) {
   const sx = wall.start.x * CM_TO_UNIT;
   const sz = wall.start.y * CM_TO_UNIT;
   const ex = wall.end.x * CM_TO_UNIT;
@@ -78,12 +86,28 @@ function Wall3D({ wall }: { wall: WallType }) {
   const cx = (sx + ex) / 2;
   const cz = (sz + ez) / 2;
 
+  const geometry = useMemo(() => <boxGeometry args={[len, h, t]} />, [len, h, t]);
+
   return (
     <group position={[cx, h / 2, cz]} rotation={[0, -angle, 0]}>
-      <mesh castShadow receiveShadow>
-        <boxGeometry args={[len, h, t]} />
-        <meshStandardMaterial color="#2A2A4A" />
+      <mesh
+        castShadow
+        receiveShadow
+        onClick={(e) => { e.stopPropagation(); onSelect(); }}
+      >
+        {geometry}
+        <meshStandardMaterial
+          color="#2A2A4A"
+          emissive={isSelected ? '#FF6B35' : '#000'}
+          emissiveIntensity={isSelected ? 0.4 : 0}
+        />
       </mesh>
+      {isSelected && (
+        <mesh>
+          <boxGeometry args={[len + 0.04, h + 0.04, t + 0.04]} />
+          <meshBasicMaterial color="#FF6B35" wireframe opacity={0.5} transparent />
+        </mesh>
+      )}
     </group>
   );
 }
@@ -102,31 +126,27 @@ function Furniture3D({
   const z = item.position.y * CM_TO_UNIT;
   const rot = (item.rotation * Math.PI) / 180;
 
+  const geometry = useMemo(() => {
+    if (item.shape === 'circle') {
+      return <cylinderGeometry args={[Math.min(w, d) / 2, Math.min(w, d) / 2, h, 24]} />;
+    }
+    return <boxGeometry args={[w, h, d]} />;
+  }, [item.shape, w, h, d]);
+
   return (
     <group
       position={[x, h / 2 + 0.001, z]}
       rotation={[0, -rot, 0]}
       onClick={(e) => { e.stopPropagation(); onSelect(); }}
     >
-      {item.shape === 'circle' ? (
-        <mesh castShadow receiveShadow>
-          <cylinderGeometry args={[Math.min(w, d) / 2, Math.min(w, d) / 2, h, 24]} />
-          <meshStandardMaterial
-            color={item.color}
-            emissive={isSelected ? '#FF6B35' : '#000'}
-            emissiveIntensity={isSelected ? 0.3 : 0}
-          />
-        </mesh>
-      ) : (
-        <mesh castShadow receiveShadow>
-          <boxGeometry args={[w, h, d]} />
-          <meshStandardMaterial
-            color={item.color}
-            emissive={isSelected ? '#FF6B35' : '#000'}
-            emissiveIntensity={isSelected ? 0.3 : 0}
-          />
-        </mesh>
-      )}
+      <mesh castShadow receiveShadow>
+        {geometry}
+        <meshStandardMaterial
+          color={item.color}
+          emissive={isSelected ? '#FF6B35' : '#000'}
+          emissiveIntensity={isSelected ? 0.3 : 0}
+        />
+      </mesh>
       <Text
         position={[0, h / 2 + 0.15, 0]}
         fontSize={0.15}

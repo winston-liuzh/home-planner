@@ -337,6 +337,117 @@ body {
   border-color: var(--danger);
 }
 
+/* ===== Multi-Select Panel ===== */
+.multi-select-summary {
+  padding: 8px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.multi-select-group {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.multi-select-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent2);
+  padding-bottom: 3px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+
+.multi-select-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  font-size: 11px;
+  color: var(--text);
+  border-radius: 3px;
+  background: rgba(255,255,255,0.03);
+}
+
+.multi-item-icon {
+  font-size: 10px;
+  color: var(--text2);
+  width: 14px;
+  text-align: center;
+}
+
+/* ===== Ungroup Confirm Dialog ===== */
+.ungroup-confirm-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.ungroup-confirm-dialog {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px 24px;
+  min-width: 260px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+.ungroup-confirm-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--accent2);
+  margin-bottom: 10px;
+}
+
+.ungroup-confirm-text {
+  font-size: 12px;
+  color: var(--text2);
+  line-height: 1.6;
+  margin-bottom: 16px;
+}
+
+.ungroup-confirm-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.ungroup-confirm-actions .btn-confirm {
+  padding: 6px 16px;
+  border: none;
+  border-radius: 5px;
+  background: var(--accent);
+  color: #FFF;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.ungroup-confirm-actions .btn-confirm:hover {
+  background: #c73a50;
+}
+
+.ungroup-confirm-actions .btn-cancel {
+  padding: 6px 16px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.ungroup-confirm-actions .btn-cancel:hover {
+  border-color: var(--accent2);
+  background: var(--surface2);
+}
+
 /* ===== Editor Container ===== */
 .editor-container {
   flex: 1;

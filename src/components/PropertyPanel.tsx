@@ -1,10 +1,70 @@
-import { useState } from 'react';
 import { usePlannerStore } from '../store/plannerStore';
 
 export default function PropertyPanel() {
-  const { project, selection, removeFurniture, removeWall, rotateFurniture, resizeFurniture, moveFurniture, moveWallPoint } = usePlannerStore();
+  const project = usePlannerStore((s) => s.project);
+  const selection = usePlannerStore((s) => s.selection);
+  const boxSelectionIds = usePlannerStore((s) => s.boxSelectionIds);
+  const removeFurniture = usePlannerStore((s) => s.removeFurniture);
+  const removeWall = usePlannerStore((s) => s.removeWall);
+  const rotateFurniture = usePlannerStore((s) => s.rotateFurniture);
+  const resizeFurniture = usePlannerStore((s) => s.resizeFurniture);
+  const moveFurniture = usePlannerStore((s) => s.moveFurniture);
+  const moveWallPoint = usePlannerStore((s) => s.moveWallPoint);
+  const deleteItems = usePlannerStore((s) => s.deleteItems);
+  const setBoxSelectionIds = usePlannerStore((s) => s.setBoxSelectionIds);
 
   const walls = project.rooms.flatMap(r => r.walls);
+
+  if (boxSelectionIds.length > 0) {
+    const selectedWalls = walls.filter(w => boxSelectionIds.includes(w.id));
+    const selectedFurniture = project.furniture.filter(f => boxSelectionIds.includes(f.id));
+
+    return (
+      <div className="property-panel">
+        <div className="panel-header">多选 ({boxSelectionIds.length} 项)</div>
+        <div className="multi-select-summary">
+          {selectedWalls.length > 0 && (
+            <div className="multi-select-group">
+              <div className="multi-select-label">墙体 × {selectedWalls.length}</div>
+              {selectedWalls.map(w => {
+                const dx = w.end.x - w.start.x;
+                const dy = w.end.y - w.start.y;
+                const len = Math.sqrt(dx * dx + dy * dy);
+                return (
+                  <div key={w.id} className="multi-select-item">
+                    <span className="multi-item-icon">▐</span>
+                    <span>{Math.round(len)}cm</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {selectedFurniture.length > 0 && (
+            <div className="multi-select-group">
+              <div className="multi-select-label">家具 × {selectedFurniture.length}</div>
+              {selectedFurniture.map(f => (
+                <div key={f.id} className="multi-select-item">
+                  <span className="multi-item-icon">▪</span>
+                  <span>{f.name}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="prop-actions">
+          <button className="btn-danger" onClick={() => deleteItems(boxSelectionIds)}>
+            ✕ 删除全部 ({boxSelectionIds.length})
+          </button>
+          <button onClick={() => setBoxSelectionIds([])}>
+            取消选择
+          </button>
+        </div>
+        <div className="empty-hint">
+          <span className="hint-small">按 Del 批量删除 · Esc 取消选择</span>
+        </div>
+      </div>
+    );
+  }
 
   if (!selection) {
     return (

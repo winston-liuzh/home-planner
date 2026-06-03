@@ -2,6 +2,10 @@ import { create } from 'zustand';
 import { v4 as uuid } from 'uuid';
 import type { Project, ViewMode, ToolMode, PlacedFurniture, Wall, Point2D, FurnitureModel, Selection } from '../types';
 
+function dist(a: Point2D, b: Point2D): number {
+  return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2);
+}
+
 // ===== 家具模型库 =====
 export const FURNITURE_LIBRARY: FurnitureModel[] = [
   { id: 'sofa-3', name: '三人沙发', category: '客厅', width: 220, depth: 90, height: 85, color: '#6B8E7B', shape: 'rect' },
@@ -32,33 +36,36 @@ interface PlannerState {
   viewMode: ViewMode;
   toolMode: ToolMode;
   selection: Selection | null;
-  pendingFurnitureModelId: string | null; // 待放置的家具模型ID
-  wallDrawing: { start: Point2D | null; end: Point2D | null };
+  pendingFurnitureModelId: string | null;
+  wallDrawing: { start: Point2D | null; end: Point2D | null; firstPoint: Point2D | null };
+  boxSelectionIds: string[];
 
   setViewMode: (mode: ViewMode) => void;
   setToolMode: (mode: ToolMode) => void;
   selectItem: (sel: Selection | null) => void;
   setPendingFurnitureModelId: (id: string | null) => void;
 
-  // Wall
   addWall: (start: Point2D, end: Point2D) => void;
   removeWall: (id: string) => void;
   updateWall: (id: string, updates: Partial<Wall>) => void;
   moveWallPoint: (wallId: string, point: 'start' | 'end', pos: Point2D) => void;
 
-  // Furniture
   addFurniture: (modelId: string, position: Point2D) => void;
   removeFurniture: (id: string) => void;
   moveFurniture: (id: string, position: Point2D) => void;
   rotateFurniture: (id: string, angle: number) => void;
   resizeFurniture: (id: string, width: number, depth: number) => void;
 
-  // Wall drawing
   setWallDrawingStart: (p: Point2D | null) => void;
   setWallDrawingEnd: (p: Point2D | null) => void;
+  setWallDrawingFirstPoint: (p: Point2D | null) => void;
+  resetWallDrawing: () => void;
 
-  // Delete selected
+  setBoxSelectionIds: (ids: string[]) => void;
+  deleteItems: (ids: string[]) => void;
   deleteSelected: () => void;
+  ungroupWalls: (groupId: string) => void;
+  autoGroupWalls: () => void;
 }
 
 const defaultProject: Project = {
@@ -76,27 +83,52 @@ export const usePlannerStore = create<PlannerState>((set, get) => ({
   toolMode: 'select',
   selection: null,
   pendingFurnitureModelId: null,
-  wallDrawing: { start: null, end: null },
+  wallDrawing: { start: null, end: null, firstPoint: null },
+  boxSelectionIds: [],
 
   setViewMode: (mode) => set({ viewMode: mode }),
-  setToolMode: (mode) => set({ toolMode: mode, selection: null, pendingFurnitureModelId: null, wallDrawing: { start: null, end: null } }),
-  selectItem: (sel) => set({ selection: sel }),
+  setToolMode: (mode) => set({ toolMode: mode, selection: null, pendingFurnitureModelId: null, wallDrawing: { start: null, end: null, firstPoint: null }, boxSelectionIds: [] }),
+  selectItem: (sel) => set({ selection: sel, boxSelectionIds: [] }),
   setPendingFurnitureModelId: (id) => set({ pendingFurnitureModelId: id, toolMode: id ? 'furniture' : 'select' }),
 
   addWall: (start, end) =>
-    set((s) => ({
-      project: {
-        ...s.project,
-        rooms: s.project.rooms.length === 0
-          ? [{ id: uuid(), name: '房间1', walls: [{ id: uuid(), start, end, thickness: 24, height: 280 }], floorColor: '#F5F0E8', height: 280 }]
-          : s.project.rooms.map((r, i) =>
-              i === 0
-                ? { ...r, walls: [...r.walls, { id: uuid(), start, end, thickness: 24, height: 280 }] }
-                : r
-            ),
-        updatedAt: Date.now(),
-      },
-    })),
+    set((s) => {
+      const allWalls = s.project.rooms.flatMap(r => r.walls);
+      const THRESHOLD = 2;
+      // 查找与新建墙端点重合的已有墙的 groupId
+      let matchedGroupId: string | undefined;
+      for (const w of allWalls) {
+        if (dist(w.start, start) < THRESHOLD || dist(w.end, start) < THRESHOLD ||
+            dist(w.start, end) < THRESHOLD || dist(w.end, end) < THRESHOLD) {
+          if (w.groupId) {
+            matchedGroupId = w.groupId;
+            break;
+          }
+        }
+      }
+      const newGroupId = matchedGroupId ?? uuid();
+      const newWall: Wall = { id: uuid(), start, end, thickness: 24, height: 280, groupId: newGroupId };
+
+      // 如果新墙有 groupId，把匹配到但还没有 groupId 的墙也归入
+      const updatedRooms = s.project.rooms.length === 0
+        ? [{ id: uuid(), name: '房间1', walls: [newWall], floorColor: '#F5F0E8', height: 280 }]
+        : s.project.rooms.map((r, i) => {
+            if (i !== 0) return r;
+            const updatedWalls = r.walls.map(w => {
+              if (w.groupId) return w;
+              if (dist(w.start, start) < THRESHOLD || dist(w.end, start) < THRESHOLD ||
+                  dist(w.start, end) < THRESHOLD || dist(w.end, end) < THRESHOLD) {
+                return { ...w, groupId: newGroupId };
+              }
+              return w;
+            });
+            return { ...r, walls: [...updatedWalls, newWall] };
+          });
+
+      return {
+        project: { ...s.project, rooms: updatedRooms, updatedAt: Date.now() },
+      };
+    }),
 
   removeWall: (id) =>
     set((s) => ({
@@ -109,6 +141,7 @@ export const usePlannerStore = create<PlannerState>((set, get) => ({
         updatedAt: Date.now(),
       },
       selection: s.selection?.id === id ? null : s.selection,
+      boxSelectionIds: s.boxSelectionIds.filter((bid) => bid !== id),
     })),
 
   updateWall: (id, updates) =>
@@ -174,6 +207,7 @@ export const usePlannerStore = create<PlannerState>((set, get) => ({
         updatedAt: Date.now(),
       },
       selection: s.selection?.id === id ? null : s.selection,
+      boxSelectionIds: s.boxSelectionIds.filter((bid) => bid !== id),
     })),
 
   moveFurniture: (id, position) =>
@@ -211,6 +245,29 @@ export const usePlannerStore = create<PlannerState>((set, get) => ({
 
   setWallDrawingStart: (p) => set((s) => ({ wallDrawing: { ...s.wallDrawing, start: p } })),
   setWallDrawingEnd: (p) => set((s) => ({ wallDrawing: { ...s.wallDrawing, end: p } })),
+  setWallDrawingFirstPoint: (p) => set((s) => ({ wallDrawing: { ...s.wallDrawing, firstPoint: p } })),
+  resetWallDrawing: () => set({ wallDrawing: { start: null, end: null, firstPoint: null } }),
+
+  setBoxSelectionIds: (ids) => set({ boxSelectionIds: ids }),
+
+  deleteItems: (ids) => {
+    const s = get();
+    const wallIds = new Set(ids.filter((id) => s.project.rooms.some((r) => r.walls.some((w) => w.id === id))));
+    const furnitureIds = new Set(ids.filter((id) => s.project.furniture.some((f) => f.id === id)));
+    set({
+      project: {
+        ...s.project,
+        rooms: s.project.rooms.map((r) => ({
+          ...r,
+          walls: r.walls.filter((w) => !wallIds.has(w.id)),
+        })),
+        furniture: s.project.furniture.filter((f) => !furnitureIds.has(f.id)),
+        updatedAt: Date.now(),
+      },
+      selection: s.selection && ids.includes(s.selection.id) ? null : s.selection,
+      boxSelectionIds: [],
+    });
+  },
 
   deleteSelected: () => {
     const { selection, removeFurniture, removeWall } = get();
@@ -218,4 +275,69 @@ export const usePlannerStore = create<PlannerState>((set, get) => ({
     if (selection.type === 'furniture') removeFurniture(selection.id);
     else if (selection.type === 'wall') removeWall(selection.id);
   },
+
+  ungroupWalls: (groupId) =>
+    set((s) => ({
+      project: {
+        ...s.project,
+        rooms: s.project.rooms.map((r) => ({
+          ...r,
+          walls: r.walls.map((w) =>
+            w.groupId === groupId ? { ...w, groupId: undefined } : w
+          ),
+        })),
+        updatedAt: Date.now(),
+      },
+    })),
+
+  autoGroupWalls: () =>
+    set((s) => {
+      const THRESHOLD = 2;
+      const allWalls = s.project.rooms.flatMap(r => r.walls);
+      // Union-Find 简易实现
+      const parent = new Map<string, string>();
+      const find = (id: string): string => {
+        let p = parent.get(id) ?? id;
+        if (p !== id) { p = find(p); parent.set(id, p); }
+        return p;
+      };
+      const union = (a: string, b: string) => {
+        const pa = find(a), pb = find(b);
+        if (pa !== pb) parent.set(pa, pb);
+      };
+      // 遍历所有墙对，端点重合则合并
+      for (let i = 0; i < allWalls.length; i++) {
+        for (let j = i + 1; j < allWalls.length; j++) {
+          const a = allWalls[i], b = allWalls[j];
+          if (dist(a.start, b.start) < THRESHOLD || dist(a.start, b.end) < THRESHOLD ||
+              dist(a.end, b.start) < THRESHOLD || dist(a.end, b.end) < THRESHOLD) {
+            union(a.id, b.id);
+          }
+        }
+      }
+      // 分配 groupId
+      const rootToGroup = new Map<string, string>();
+      const updatedWallsMap = new Map<string, Wall>();
+      for (const w of allWalls) {
+        const root = find(w.id);
+        let gid = rootToGroup.get(root);
+        if (!gid) {
+          // 如果这组中已有 groupId，沿用
+          const existingGroup = allWalls.find(ww => find(ww.id) === root && ww.groupId);
+          gid = existingGroup?.groupId ?? uuid();
+          rootToGroup.set(root, gid);
+        }
+        updatedWallsMap.set(w.id, { ...w, groupId: gid });
+      }
+      return {
+        project: {
+          ...s.project,
+          rooms: s.project.rooms.map((r) => ({
+            ...r,
+            walls: r.walls.map((w) => updatedWallsMap.get(w.id) ?? w),
+          })),
+          updatedAt: Date.now(),
+        },
+      };
+    }),
 }));

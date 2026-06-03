@@ -1,5 +1,6 @@
 import { usePlannerStore } from '../store/plannerStore';
 import type { ToolMode, ViewMode } from '../types';
+import { version } from '../../package.json';
 
 const tools: { mode: ToolMode; icon: string; label: string }[] = [
   { mode: 'select', icon: '⬚', label: '选择' },
@@ -13,12 +14,15 @@ const views: { mode: ViewMode; icon: string; label: string }[] = [
 ];
 
 export default function Toolbar() {
-  const { toolMode, viewMode, setToolMode, setViewMode } = usePlannerStore();
+  const toolMode = usePlannerStore((s) => s.toolMode);
+  const viewMode = usePlannerStore((s) => s.viewMode);
+  const setToolMode = usePlannerStore((s) => s.setToolMode);
+  const setViewMode = usePlannerStore((s) => s.setViewMode);
 
   return (
     <div className="toolbar">
       <div className="toolbar-section">
-        <span className="toolbar-title">🏠 Home Planner</span>
+        <span className="toolbar-title">🏠 Home Planner <small style={{ fontSize: 9, opacity: 0.5, fontWeight: 400 }}>v{version}</small></span>
       </div>
       <div className="toolbar-section">
         <span className="section-label">视图</span>
