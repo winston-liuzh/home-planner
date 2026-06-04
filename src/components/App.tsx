@@ -6,12 +6,37 @@ import FurniturePanel from './FurniturePanel';
 import PropertyPanel from './PropertyPanel';
 import { usePlannerStore } from '../store/plannerStore';
 
+function SaveStatusIndicator() {
+  const saveStatus = usePlannerStore((s) => s.saveStatus);
+  const lastSavedAt = usePlannerStore((s) => s.lastSavedAt);
+  const projectName = usePlannerStore((s) => s.project.name);
+
+  const formatTime = (ts: number) => {
+    const d = new Date(ts);
+    return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  };
+
+  return (
+    <div className="save-status">
+      <span className="save-status-file">{projectName}</span>
+      {saveStatus === 'saving' && (
+        <span className="save-status-saving">存储中...</span>
+      )}
+      {saveStatus === 'saved' && lastSavedAt && (
+        <span className="save-status-saved">已保存 {formatTime(lastSavedAt)}</span>
+      )}
+      {saveStatus === 'idle' && !lastSavedAt && (
+        <span className="save-status-idle">自动保存</span>
+      )}
+    </div>
+  );
+}
+
 export default function App() {
   const viewMode = usePlannerStore((s) => s.viewMode);
   const projectName = usePlannerStore((s) => s.project.name);
   const furnitureCount = usePlannerStore((s) => s.project.furniture.length);
   const wallCount = usePlannerStore((s) => s.project.rooms.reduce((n, r) => n + r.walls.length, 0));
-  const dirty = usePlannerStore((s) => s.dirty);
 
   // 退出前提示：项目有内容时拦截浏览器关闭
   useEffect(() => {
@@ -43,7 +68,8 @@ export default function App() {
         <span>🪑 {furnitureCount} 件家具</span>
         <span>🧱 {wallCount} 面墙</span>
         <span>坐标单位: cm</span>
-        {dirty && <span style={{ color: '#FF6B35' }}>● 未保存</span>}
+        <span style={{ flex: 1 }} />
+        <SaveStatusIndicator />
       </div>
     </div>
   );

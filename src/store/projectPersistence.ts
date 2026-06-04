@@ -143,3 +143,42 @@ export function clearProject(): void {
 export function hasSavedProject(): boolean {
   return localStorage.getItem(STORAGE_KEY) !== null;
 }
+
+// ===== 导出 / 导入（文件系统） =====
+
+/** 导出项目为 JSON 文件下载 */
+export function exportProjectFile(project: Project): void {
+  const file: ProjectFile = {
+    schemaVersion: CURRENT_SCHEMA_VERSION,
+    project,
+    savedAt: Date.now(),
+  };
+  const json = JSON.stringify(file, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${project.name || 'home-planner'}.hp.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+/** 从 JSON 文件导入项目 */
+export function importProjectFile(file: File): Promise<Project> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(reader.result as string);
+        const migrated = migrateProjectFile(data);
+        resolve(migrated.project);
+      } catch (e) {
+        reject(e);
+      }
+    };
+    reader.onerror = () => reject(new Error('文件读取失败'));
+    reader.readAsText(file);
+  });
+}

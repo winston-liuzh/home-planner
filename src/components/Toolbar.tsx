@@ -1,3 +1,4 @@
+import { useRef } from 'react';
 import { usePlannerStore } from '../store/plannerStore';
 import type { ToolMode, ViewMode } from '../types';
 import { version } from '../../package.json';
@@ -19,11 +20,24 @@ export default function Toolbar() {
   const setToolMode = usePlannerStore((s) => s.setToolMode);
   const setViewMode = usePlannerStore((s) => s.setViewMode);
   const newProject = usePlannerStore((s) => s.newProject);
+  const exportProject = usePlannerStore((s) => s.exportProject);
+  const importProject = usePlannerStore((s) => s.importProject);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleNewProject = () => {
     if (window.confirm('确定要新建项目吗？当前项目已自动保存。')) {
       newProject();
     }
+  };
+
+  const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (window.confirm('导入将替换当前项目，确定继续吗？')) {
+      await importProject(file);
+    }
+    // 重置 input 以便重复选择同一文件
+    e.target.value = '';
   };
 
   return (
@@ -37,6 +51,21 @@ export default function Toolbar() {
           📄
           <span className="btn-label">新建</span>
         </button>
+        <button className="tool-btn" onClick={exportProject} title="另存为文件">
+          💾
+          <span className="btn-label">另存为</span>
+        </button>
+        <button className="tool-btn" onClick={() => fileInputRef.current?.click()} title="加载项目文件">
+          📂
+          <span className="btn-label">加载</span>
+        </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".json,.hp.json"
+          style={{ display: 'none' }}
+          onChange={handleImport}
+        />
       </div>
       <div className="toolbar-divider" />
       <div className="toolbar-section">

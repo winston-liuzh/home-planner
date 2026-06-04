@@ -505,6 +505,36 @@ body {
   flex-shrink: 0;
 }
 
+.save-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10px;
+}
+
+.save-status-file {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.save-status-saving {
+  color: var(--accent2);
+  animation: pulse 1s infinite;
+}
+
+.save-status-saved {
+  color: var(--success);
+}
+
+.save-status-idle {
+  color: var(--text2);
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
 /* ===== Scrollbar ===== */
 ::-webkit-scrollbar {
   width: 5px;

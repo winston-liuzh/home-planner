@@ -1,7 +1,8 @@
 import { create } from 'zustand';
 import { v4 as uuid } from 'uuid';
 import type { Project, ViewMode, ToolMode, PlacedFurniture, Wall, Point2D, FurnitureModel, Selection } from '../types';
-import { saveProject, loadProject } from './projectPersistence';
+import { saveProject, loadProject, exportProjectFile, importProjectFile, CURRENT_SCHEMA_VERSION } from './projectPersistence';
+import type { ProjectFile } from './projectPersistence';
 
 function dist(a: Point2D, b: Point2D): number {
   return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2);
@@ -41,6 +42,8 @@ interface PlannerState {
   wallDrawing: { start: Point2D | null; end: Point2D | null; firstPoint: Point2D | null };
   boxSelectionIds: string[];
   dirty: boolean; // 是否有未保存的变更
+  saveStatus: 'idle' | 'saving' | 'saved'; // 保存状态
+  lastSavedAt: number | null; // 上次保存时间
 
   setViewMode: (mode: ViewMode) => void;
   setToolMode: (mode: ToolMode) => void;
@@ -71,6 +74,8 @@ interface PlannerState {
 
   loadSavedProject: () => void;
   newProject: () => void;
+  exportProject: () => void;
+  importProject: (file: File) => Promise<void>;
 }
 
 // 启动时尝试加载已保存的项目
@@ -92,6 +97,8 @@ export const usePlannerStore = create<PlannerState>((set, get) => ({
   wallDrawing: { start: null, end: null, firstPoint: null },
   boxSelectionIds: [],
   dirty: false,
+  saveStatus: 'idle',
+  lastSavedAt: null,
 
   setViewMode: (mode) => set({ viewMode: mode }),
   setToolMode: (mode) => set({ toolMode: mode, selection: null, pendingFurnitureModelId: null, wallDrawing: { start: null, end: null, firstPoint: null }, boxSelectionIds: [] }),
@@ -366,6 +373,22 @@ export const usePlannerStore = create<PlannerState>((set, get) => ({
     };
     set({ project: fresh, dirty: false, selection: null, boxSelectionIds: [] });
   },
+
+  exportProject: () => {
+    const { project } = get();
+    exportProjectFile(project);
+  },
+
+  importProject: async (file: File) => {
+    try {
+      const project = await importProjectFile(file);
+      set({ project, dirty: false, selection: null, boxSelectionIds: [] });
+      saveProject(project);
+    } catch (e) {
+      console.error('导入项目失败:', e);
+      alert('导入失败：文件格式不正确');
+    }
+  },
 }));
 
 // ===== 自动保存：project 变更后 500ms 防抖写入 =====
@@ -375,13 +398,14 @@ usePlannerStore.subscribe((state, prevState) => {
   if (state.project !== prevState.project) {
     // 标记为有变更
     if (!state.dirty) {
-      usePlannerStore.setState({ dirty: true });
+      usePlannerStore.setState({ dirty: true, saveStatus: 'idle' });
     }
     // 防抖保存
     if (saveTimer) clearTimeout(saveTimer);
+    usePlannerStore.setState({ saveStatus: 'saving' });
     saveTimer = setTimeout(() => {
       saveProject(usePlannerStore.getState().project);
-      usePlannerStore.setState({ dirty: false });
+      usePlannerStore.setState({ dirty: false, saveStatus: 'saved', lastSavedAt: Date.now() });
     }, 500);
   }
 });
