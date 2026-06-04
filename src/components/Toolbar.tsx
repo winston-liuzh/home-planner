@@ -18,12 +18,27 @@ export default function Toolbar() {
   const viewMode = usePlannerStore((s) => s.viewMode);
   const setToolMode = usePlannerStore((s) => s.setToolMode);
   const setViewMode = usePlannerStore((s) => s.setViewMode);
+  const newProject = usePlannerStore((s) => s.newProject);
+
+  const handleNewProject = () => {
+    if (window.confirm('确定要新建项目吗？当前项目已自动保存。')) {
+      newProject();
+    }
+  };
 
   return (
     <div className="toolbar">
       <div className="toolbar-section">
         <span className="toolbar-title">🏠 Home Planner <small style={{ fontSize: 9, opacity: 0.5, fontWeight: 400 }}>v{version}</small></span>
       </div>
+      <div className="toolbar-section">
+        <span className="section-label">文件</span>
+        <button className="tool-btn" onClick={handleNewProject} title="新建项目">
+          📄
+          <span className="btn-label">新建</span>
+        </button>
+      </div>
+      <div className="toolbar-divider" />
       <div className="toolbar-section">
         <span className="section-label">视图</span>
         {views.map((v) => (

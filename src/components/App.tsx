@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import Toolbar from './Toolbar';
 import Editor2D from './Editor2D';
 import Editor3D from './Editor3D';
@@ -10,6 +11,19 @@ export default function App() {
   const projectName = usePlannerStore((s) => s.project.name);
   const furnitureCount = usePlannerStore((s) => s.project.furniture.length);
   const wallCount = usePlannerStore((s) => s.project.rooms.reduce((n, r) => n + r.walls.length, 0));
+  const dirty = usePlannerStore((s) => s.dirty);
+
+  // 退出前提示保存
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (dirty) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [dirty]);
 
   return (
     <div className="app">
@@ -26,6 +40,7 @@ export default function App() {
         <span>🪑 {furnitureCount} 件家具</span>
         <span>🧱 {wallCount} 面墙</span>
         <span>坐标单位: cm</span>
+        {dirty && <span style={{ color: '#FF6B35' }}>● 未保存</span>}
       </div>
     </div>
   );

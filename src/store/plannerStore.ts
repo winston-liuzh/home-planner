@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { v4 as uuid } from 'uuid';
 import type { Project, ViewMode, ToolMode, PlacedFurniture, Wall, Point2D, FurnitureModel, Selection } from '../types';
+import { saveProject, loadProject } from './projectPersistence';
 
 function dist(a: Point2D, b: Point2D): number {
   return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2);
@@ -39,6 +40,7 @@ interface PlannerState {
   pendingFurnitureModelId: string | null;
   wallDrawing: { start: Point2D | null; end: Point2D | null; firstPoint: Point2D | null };
   boxSelectionIds: string[];
+  dirty: boolean; // 是否有未保存的变更
 
   setViewMode: (mode: ViewMode) => void;
   setToolMode: (mode: ToolMode) => void;
@@ -66,9 +68,13 @@ interface PlannerState {
   deleteSelected: () => void;
   ungroupWalls: (groupId: string) => void;
   autoGroupWalls: () => void;
+
+  loadSavedProject: () => void;
+  newProject: () => void;
 }
 
-const defaultProject: Project = {
+// 启动时尝试加载已保存的项目
+const initialProject: Project = loadProject() ?? {
   id: uuid(),
   name: '我的户型',
   rooms: [],
@@ -78,13 +84,14 @@ const defaultProject: Project = {
 };
 
 export const usePlannerStore = create<PlannerState>((set, get) => ({
-  project: defaultProject,
+  project: initialProject,
   viewMode: '2d',
   toolMode: 'select',
   selection: null,
   pendingFurnitureModelId: null,
   wallDrawing: { start: null, end: null, firstPoint: null },
   boxSelectionIds: [],
+  dirty: false,
 
   setViewMode: (mode) => set({ viewMode: mode }),
   setToolMode: (mode) => set({ toolMode: mode, selection: null, pendingFurnitureModelId: null, wallDrawing: { start: null, end: null, firstPoint: null }, boxSelectionIds: [] }),
@@ -340,4 +347,41 @@ export const usePlannerStore = create<PlannerState>((set, get) => ({
         },
       };
     }),
+
+  loadSavedProject: () => {
+    const saved = loadProject();
+    if (saved) {
+      set({ project: saved, dirty: false, selection: null, boxSelectionIds: [] });
+    }
+  },
+
+  newProject: () => {
+    const fresh: Project = {
+      id: uuid(),
+      name: '我的户型',
+      rooms: [],
+      furniture: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    set({ project: fresh, dirty: false, selection: null, boxSelectionIds: [] });
+  },
 }));
+
+// ===== 自动保存：project 变更后 500ms 防抖写入 =====
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+
+usePlannerStore.subscribe((state, prevState) => {
+  if (state.project !== prevState.project) {
+    // 标记为有变更
+    if (!state.dirty) {
+      usePlannerStore.setState({ dirty: true });
+    }
+    // 防抖保存
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      saveProject(usePlannerStore.getState().project);
+      usePlannerStore.setState({ dirty: false });
+    }, 500);
+  }
+});
