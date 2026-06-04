@@ -18,6 +18,7 @@ export interface Wall {
   end: Point2D;
   thickness: number; // cm
   height: number;    // cm
+  opacity?: number;  // 0-1 透明度，默认1
   groupId?: string;  // 墙体组合ID，共享端点的墙体自动归为同组
 }
 

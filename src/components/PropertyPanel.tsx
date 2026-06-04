@@ -10,6 +10,7 @@ export default function PropertyPanel() {
   const resizeFurniture = usePlannerStore((s) => s.resizeFurniture);
   const moveFurniture = usePlannerStore((s) => s.moveFurniture);
   const moveWallPoint = usePlannerStore((s) => s.moveWallPoint);
+  const updateWall = usePlannerStore((s) => s.updateWall);
   const deleteItems = usePlannerStore((s) => s.deleteItems);
   const setBoxSelectionIds = usePlannerStore((s) => s.setBoxSelectionIds);
 
@@ -209,6 +210,19 @@ export default function PropertyPanel() {
         <div className="prop-group">
           <label>墙厚 (cm)</label>
           <span>{wall.thickness}</span>
+        </div>
+        <div className="prop-group">
+          <label>透明度</label>
+          <input
+            type="range"
+            min="0.1"
+            max="1"
+            step="0.1"
+            value={wall.opacity ?? 1}
+            onChange={(e) => updateWall(wall.id, { opacity: +e.target.value })}
+            style={{ width: '100%' }}
+          />
+          <span>{Math.round((wall.opacity ?? 1) * 100)}%</span>
         </div>
         <div className="prop-actions">
           <button className="btn-danger" onClick={() => removeWall(wall.id)}>

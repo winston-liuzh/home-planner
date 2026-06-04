@@ -92,9 +92,11 @@ export default function Editor2D() {
     type: 'point' | 'body';
     point?: 'start' | 'end';
     startWallPos?: { start: Point2D; end: Point2D };
-    dragOffset?: Point2D;
     groupStartPos?: Record<string, { start: Point2D; end: Point2D }>;
+    linkedWalls?: { wallId: string; point: 'start' | 'end' }[];
   } | null>(null);
+  const wallDraggingRef = useRef(wallDragging);
+  wallDraggingRef.current = wallDragging;
 
   const [snapPreview, setSnapPreview] = useState<Point2D | null>(null);
   const [boxSelectRect, setBoxSelectRect] = useState<{ start: Point2D; end: Point2D } | null>(null);
@@ -132,6 +134,7 @@ export default function Editor2D() {
         }
       }
       if (e.key === 'Escape') {
+        setUngroupConfirmId(null);
         selectItem(null);
         setPendingFurnitureModelId(null);
         resetWallDrawing();
@@ -296,24 +299,11 @@ export default function Editor2D() {
         }
       }
     }
-
-    if (wallDragging?.type === 'body' && wallDragging.startWallPos) {
-      const cm = getPointerCm();
-      const dx = cm.x - (wallDragging.dragOffset?.x ?? 0) - wallDragging.startWallPos.start.x;
-      const dy = cm.y - (wallDragging.dragOffset?.y ?? 0) - wallDragging.startWallPos.start.y;
-      const newStart = snapPoint({ x: wallDragging.startWallPos.start.x + dx, y: wallDragging.startWallPos.start.y + dy });
-      const newEnd = snapPoint({ x: wallDragging.startWallPos.end.x + dx, y: wallDragging.startWallPos.end.y + dy });
-      updateWall(wallDragging.wallId, { start: newStart, end: newEnd });
-    }
-  }, [isPanning, panStart, screenToCm, toolMode, wallDrawing, getPointerCm, setWallDrawingEnd, smartSnapWithAngle, wallDragging, updateWall, boxSelectStart, snapToWalls]);
+  }, [isPanning, panStart, screenToCm, toolMode, wallDrawing, setWallDrawingEnd, smartSnapWithAngle, boxSelectStart, snapToWalls]);
 
   const handleMouseUp = useCallback((e: KonvaEventObject<MouseEvent>) => {
     if (e.evt.button === 1 || e.evt.button === 2) {
       setIsPanning(false);
-    }
-
-    if (e.evt.button === 0 && wallDragging?.type === 'body') {
-      setWallDragging(null);
     }
 
     if (e.evt.button === 0 && toolMode === 'select' && boxSelectRect) {
@@ -327,15 +317,17 @@ export default function Editor2D() {
       const maxY = Math.max(boxSelectRect.start.y, boxSelectRect.end.y);
 
       const rectArea = (maxX - minX) * (maxY - minY);
-      if (rectArea < 100) {
+      if (rectArea < 25) {
         setBoxSelectRect(null);
         setBoxSelectStart(null);
         return;
       }
 
       for (const w of walls) {
-        if ((w.start.x >= minX && w.start.x <= maxX && w.start.y >= minY && w.start.y <= maxY) ||
-            (w.end.x >= minX && w.end.x <= maxX && w.end.y >= minY && w.end.y <= maxY)) {
+        // 墙体线段与框选矩形相交，或端点在框选内
+        const startInside = w.start.x >= minX && w.start.x <= maxX && w.start.y >= minY && w.start.y <= maxY;
+        const endInside = w.end.x >= minX && w.end.x <= maxX && w.end.y >= minY && w.end.y <= maxY;
+        if (startInside || endInside) {
           ids.push(w.id);
         }
       }
@@ -349,14 +341,13 @@ export default function Editor2D() {
       setBoxSelectRect(null);
       setBoxSelectStart(null);
     }
-  }, [wallDragging, toolMode, boxSelectRect, project, setBoxSelectionIds]);
+  }, [toolMode, boxSelectRect, project, setBoxSelectionIds]);
 
   const handleStageMouseDown = useCallback((e: KonvaEventObject<MouseEvent>) => {
     if (e.evt.button !== 0) return;
     const clickedOnEmpty = e.target === e.target.getStage();
-    if (!clickedOnEmpty) return;
-
-    if (toolMode === 'select') {
+    // 只有点击空白处才启动框选，点击组件时不启动（避免拖拽墙体时产生框选框）
+    if (toolMode === 'select' && clickedOnEmpty) {
       const stage = stageRef.current;
       if (!stage) return;
       const pos = stage.getPointerPosition();
@@ -370,7 +361,7 @@ export default function Editor2D() {
     if (e.evt.button !== 0) return;
     const clickedOnEmpty = e.target === e.target.getStage();
 
-    if (toolMode === 'wall' && clickedOnEmpty) {
+    if (toolMode === 'wall') {
       const stage = stageRef.current;
       if (!stage) return;
       const pos = stage.getPointerPosition();
@@ -408,6 +399,8 @@ export default function Editor2D() {
     }
 
     if (toolMode === 'select' && clickedOnEmpty) {
+      // 点击空白处关闭解除组合弹窗
+      setUngroupConfirmId(null);
       if (boxSelectionIds.length > 0) {
         setBoxSelectionIds([]);
       } else {
@@ -434,10 +427,28 @@ export default function Editor2D() {
     moveFurniture(id, pos);
   }, [moveFurniture]);
 
+  const handleFurnitureDragMove = useCallback((e: KonvaEventObject<DragEvent>) => {
+    const node = e.target;
+    const snapped = snapPoint({ x: node.x(), y: node.y() });
+    node.x(snapped.x);
+    node.y(snapped.y);
+  }, []);
+
   const handleWallPointDragStart = useCallback((wallId: string, point: 'start' | 'end') => {
-    setWallDragging({ wallId, type: 'point', point });
+    // 记录需要联动的墙体（端点与当前拖拽端点重合的其他墙）
+    const walls = project.rooms.flatMap(r => r.walls);
+    const currentWall = walls.find(w => w.id === wallId);
+    if (!currentWall) return;
+    const dragPoint = point === 'start' ? currentWall.start : currentWall.end;
+    const linkedWalls: { wallId: string; point: 'start' | 'end' }[] = [];
+    walls.forEach(w => {
+      if (w.id === wallId) return;
+      if (dist(w.start, dragPoint) < 2) linkedWalls.push({ wallId: w.id, point: 'start' });
+      if (dist(w.end, dragPoint) < 2) linkedWalls.push({ wallId: w.id, point: 'end' });
+    });
+    setWallDragging({ wallId, type: 'point', point, linkedWalls });
     selectItem({ type: 'wall', id: wallId });
-  }, [selectItem]);
+  }, [selectItem, project.rooms]);
 
   const handleWallPointDragMove = useCallback((wallId: string, point: 'start' | 'end', e: KonvaEventObject<DragEvent>) => {
     const node = e.target;
@@ -447,19 +458,14 @@ export default function Editor2D() {
     node.y(snapped.y);
     moveWallPoint(wallId, point, snapped);
 
-    // 联动：如果其他墙的端点与当前拖拽点重合，一起移动
-    const walls = project.rooms.flatMap(r => r.walls);
-    walls.forEach(w => {
-      if (w.id === wallId) return;
-      const threshold = 2;
-      if (dist(w.start, snapped) < threshold) {
-        moveWallPoint(w.id, 'start', snapped);
-      }
-      if (dist(w.end, snapped) < threshold) {
-        moveWallPoint(w.id, 'end', snapped);
-      }
-    });
-  }, [smartSnap, moveWallPoint, project.rooms]);
+    // 联动：使用 ref 获取最新的 dragStart 时记录的联动关系
+    const drag = wallDraggingRef.current;
+    if (drag?.type === 'point' && drag.linkedWalls) {
+      drag.linkedWalls.forEach(lw => {
+        moveWallPoint(lw.wallId, lw.point, snapped);
+      });
+    }
+  }, [smartSnap, moveWallPoint]);
 
   const handleWallPointDragEnd = useCallback(() => {
     setWallDragging(null);
@@ -490,35 +496,66 @@ export default function Editor2D() {
 
   const handleWallBodyDragMove = useCallback((wallId: string, e: KonvaEventObject<DragEvent>) => {
     const node = e.target;
-    const rawDx = node.x() - (wallDragging?.startWallPos?.start.x ?? 0);
-    const rawDy = node.y() - (wallDragging?.startWallPos?.start.y ?? 0);
+    // Konva Line 的 node.x()/node.y() 是拖拽偏移量
+    const offsetX = node.x();
+    const offsetY = node.y();
+    // 重置 node 位置，避免偏移累积
     node.x(0);
     node.y(0);
 
-    if (!wallDragging?.startWallPos) return;
-    const { startWallPos } = wallDragging;
-    const newStart = snapPoint({ x: startWallPos.start.x + rawDx, y: startWallPos.start.y + rawDy });
-    const newEnd = snapPoint({ x: startWallPos.end.x + rawDx, y: startWallPos.end.y + rawDy });
+    const drag = wallDraggingRef.current;
+    if (!drag?.startWallPos) return;
+    const { startWallPos, groupStartPos } = drag;
+
+    // 拖拽过程中不吸附，保持流畅体验
+    const dx = offsetX;
+    const dy = offsetY;
+
+    const newStart = { x: startWallPos.start.x + dx, y: startWallPos.start.y + dy };
+    const newEnd = { x: startWallPos.end.x + dx, y: startWallPos.end.y + dy };
     updateWall(wallId, { start: newStart, end: newEnd });
 
     // 联动同组墙体一起移动
-    const allWalls = project.rooms.flatMap(r => r.walls);
-    const currentWall = allWalls.find(w => w.id === wallId);
-    if (currentWall?.groupId) {
-      allWalls.forEach(w => {
-        if (w.id === wallId || w.groupId !== currentWall.groupId) return;
-        const origStart = wallDragging.groupStartPos?.[w.id];
-        if (!origStart) return;
-        const gs = snapPoint({ x: origStart.start.x + rawDx, y: origStart.start.y + rawDy });
-        const ge = snapPoint({ x: origStart.end.x + rawDx, y: origStart.end.y + rawDy });
-        updateWall(w.id, { start: gs, end: ge });
+    if (groupStartPos) {
+      Object.entries(groupStartPos).forEach(([wid, origPos]) => {
+        if (wid === wallId) return;
+        const gs = { x: origPos.start.x + dx, y: origPos.start.y + dy };
+        const ge = { x: origPos.end.x + dx, y: origPos.end.y + dy };
+        updateWall(wid, { start: gs, end: ge });
       });
     }
-  }, [wallDragging, updateWall, project.rooms]);
+  }, [updateWall]);
 
   const handleWallBodyDragEnd = useCallback(() => {
+    // 拖拽结束时吸附到网格
+    const drag = wallDraggingRef.current;
+    if (drag?.type === 'body' && drag.startWallPos) {
+      const allWalls = usePlannerStore.getState().project.rooms.flatMap(r => r.walls);
+      const wall = allWalls.find(w => w.id === drag.wallId);
+      if (wall) {
+        const snappedStart = snapPoint(wall.start);
+        const snappedEnd = { x: snappedStart.x + (wall.end.x - wall.start.x), y: snappedStart.y + (wall.end.y - wall.start.y) };
+        const dx = snappedStart.x - wall.start.x;
+        const dy = snappedStart.y - wall.start.y;
+        if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
+          updateWall(drag.wallId, { start: snappedStart, end: snappedEnd });
+          // 联动同组：对同组墙也应用相同的吸附偏移
+          if (drag.groupStartPos) {
+            Object.entries(drag.groupStartPos).forEach(([wid]) => {
+              if (wid === drag.wallId) return;
+              const w = allWalls.find(aw => aw.id === wid);
+              if (!w) return;
+              updateWall(wid, {
+                start: { x: w.start.x + dx, y: w.start.y + dy },
+                end: { x: w.end.x + dx, y: w.end.y + dy },
+              });
+            });
+          }
+        }
+      }
+    }
     setWallDragging(null);
-  }, []);
+  }, [updateWall]);
 
   const gridLayer = useMemo(() => {
     const lines: React.ReactNode[] = [];
@@ -703,6 +740,7 @@ export default function Editor2D() {
               isSelected={selection?.type === 'wall' && selection.id === wall.id}
               isBoxSelected={boxSelectionIds.includes(wall.id)}
               scale={stageScale}
+              toolMode={toolMode}
               onSelect={() => selectItem({ type: 'wall', id: wall.id })}
               onPointDragStart={(point) => handleWallPointDragStart(wall.id, point)}
               onPointDragMove={(point, e) => handleWallPointDragMove(wall.id, point, e)}
@@ -714,7 +752,7 @@ export default function Editor2D() {
             />
           ))}
 
-          <WallJoints walls={walls} scale={stageScale} onUngroupClick={(groupId) => setUngroupConfirmId(groupId)} />
+          <WallJoints walls={walls} scale={stageScale} toolMode={toolMode} onUngroupClick={(groupId) => setUngroupConfirmId(groupId)} />
 
           {project.furniture.map((item) => (
             <FurnitureShape
@@ -723,7 +761,9 @@ export default function Editor2D() {
               isSelected={selection?.type === 'furniture' && selection.id === item.id}
               isBoxSelected={boxSelectionIds.includes(item.id)}
               scale={stageScale}
+              toolMode={toolMode}
               onSelect={() => selectItem({ type: 'furniture', id: item.id })}
+              onDragMove={handleFurnitureDragMove}
               onDragEnd={(e) => handleFurnitureDragEnd(item.id, e)}
               onRotate={(angle) => rotateFurniture(item.id, angle)}
               onResize={(w, d) => resizeFurniture(item.id, w, d)}
@@ -747,8 +787,8 @@ export default function Editor2D() {
       </div>
 
       {ungroupConfirmId && (
-        <div className="ungroup-confirm-overlay">
-          <div className="ungroup-confirm-dialog">
+        <div className="ungroup-confirm-overlay" onClick={() => setUngroupConfirmId(null)}>
+          <div className="ungroup-confirm-dialog" onClick={(e) => e.stopPropagation()}>
             <div className="ungroup-confirm-title">解除墙体组合</div>
             <div className="ungroup-confirm-text">
               确定要解除此墙体组合吗？<br />
@@ -770,7 +810,7 @@ export default function Editor2D() {
 
 const JOINT_THRESHOLD = 2;
 
-function WallJoints({ walls, scale, onUngroupClick }: { walls: Wall[]; scale: number; onUngroupClick: (groupId: string) => void }) {
+function WallJoints({ walls, scale, toolMode, onUngroupClick }: { walls: Wall[]; scale: number; toolMode: string; onUngroupClick: (groupId: string) => void }) {
   // 预计算连接点数据
   const jointData = useMemo(() => {
     const result: { key: string; x: number; y: number; groupIds: string[] }[] = [];
@@ -789,7 +829,7 @@ function WallJoints({ walls, scale, onUngroupClick }: { walls: Wall[]; scale: nu
         for (const [p1, p2, g1, g2] of pairs) {
           const d = dist(p1, p2);
           if (d < JOINT_THRESHOLD) {
-            const key = `${Math.round(p1.x)}_${Math.round(p1.y)}`;
+            const key = `${Math.round(p1.x / 5) * 5}_${Math.round(p1.y / 5) * 5}`;
             if (drawn.has(key)) continue;
             drawn.add(key);
             const gids: string[] = [];
@@ -803,6 +843,7 @@ function WallJoints({ walls, scale, onUngroupClick }: { walls: Wall[]; scale: nu
     return result;
   }, [walls]);
 
+  const isWallMode = toolMode === 'wall';
   return (
     <>
       {jointData.map(({ key, x, y, groupIds }) => {
@@ -817,7 +858,7 @@ function WallJoints({ walls, scale, onUngroupClick }: { walls: Wall[]; scale: nu
             stroke="#FFF"
             strokeWidth={1.5 / scale}
             opacity={0.9}
-            listening={hasGroup}
+            listening={hasGroup && !isWallMode}
             onClick={(e) => {
               e.cancelBubble = true;
               if (groupIds.length > 0) {
@@ -873,7 +914,7 @@ function WallLengthLabel({ start, end, scale }: { start: Point2D; end: Point2D; 
 }
 
 function WallShape({
-  wall, isSelected, isBoxSelected, scale, onSelect,
+  wall, isSelected, isBoxSelected, scale, toolMode, onSelect,
   onPointDragStart, onPointDragMove, onPointDragEnd,
   onBodyDragStart, onBodyDragMove, onBodyDragEnd,
   onDelete,
@@ -882,6 +923,7 @@ function WallShape({
   isSelected: boolean;
   isBoxSelected: boolean;
   scale: number;
+  toolMode: string;
   onSelect: () => void;
   onPointDragStart: (point: 'start' | 'end') => void;
   onPointDragMove: (point: 'start' | 'end', e: KonvaEventObject<DragEvent>) => void;
@@ -895,6 +937,7 @@ function WallShape({
   const midX = (wall.start.x + wall.end.x) / 2;
   const midY = (wall.start.y + wall.end.y) / 2;
   const highlighted = isSelected || isBoxSelected;
+  const isWallMode = toolMode === 'wall';
 
   return (
     <Group>
@@ -904,16 +947,48 @@ function WallShape({
         strokeWidth={thickness}
         lineCap="square"
         hitStrokeWidth={WALL_HIT_WIDTH}
-        draggable
+        opacity={wall.opacity ?? 1}
+        draggable={!isWallMode}
+        listening={!isWallMode}
         onClick={(e) => { e.cancelBubble = true; onSelect(); }}
         onDragStart={(e) => { e.cancelBubble = true; onBodyDragStart(); }}
         onDragMove={(e) => { e.cancelBubble = true; onBodyDragMove(e); }}
         onDragEnd={(e) => { e.cancelBubble = true; onBodyDragEnd(); }}
-        onMouseEnter={(e) => { const stage = e.target.getStage(); if (stage) stage.container().style.cursor = 'move'; }}
+        onMouseEnter={(e) => { if (!isWallMode) { const stage = e.target.getStage(); if (stage) stage.container().style.cursor = 'move'; }}}
         onMouseLeave={(e) => { const stage = e.target.getStage(); if (stage) stage.container().style.cursor = 'default'; }}
       />
 
       <WallLengthLabel start={wall.start} end={wall.end} scale={scale} />
+
+      {/* 画墙模式下禁用端点交互，让点击穿透到Stage */}
+      <Circle
+        x={wall.start.x} y={wall.start.y}
+        radius={highlighted ? 7 / scale : 5 / scale}
+        fill={highlighted ? '#FF6B35' : '#999'}
+        stroke="#FFF" strokeWidth={1.5 / scale}
+        opacity={isWallMode ? 0.4 : 1}
+        draggable={!isWallMode}
+        listening={!isWallMode}
+        onDragStart={(e) => { e.cancelBubble = true; onPointDragStart('start'); }}
+        onDragMove={(e) => { e.cancelBubble = true; onPointDragMove('start', e); }}
+        onDragEnd={(e) => { e.cancelBubble = true; onPointDragEnd(); }}
+        onMouseEnter={(e) => { if (!isWallMode) { const stage = e.target.getStage(); if (stage) stage.container().style.cursor = 'crosshair'; }}}
+        onMouseLeave={(e) => { const stage = e.target.getStage(); if (stage) stage.container().style.cursor = 'default'; }}
+      />
+      <Circle
+        x={wall.end.x} y={wall.end.y}
+        radius={highlighted ? 7 / scale : 5 / scale}
+        fill={highlighted ? '#FF6B35' : '#999'}
+        stroke="#FFF" strokeWidth={1.5 / scale}
+        opacity={isWallMode ? 0.4 : 1}
+        draggable={!isWallMode}
+        listening={!isWallMode}
+        onDragStart={(e) => { e.cancelBubble = true; onPointDragStart('end'); }}
+        onDragMove={(e) => { e.cancelBubble = true; onPointDragMove('end', e); }}
+        onDragEnd={(e) => { e.cancelBubble = true; onPointDragEnd(); }}
+        onMouseEnter={(e) => { if (!isWallMode) { const stage = e.target.getStage(); if (stage) stage.container().style.cursor = 'crosshair'; }}}
+        onMouseLeave={(e) => { const stage = e.target.getStage(); if (stage) stage.container().style.cursor = 'default'; }}
+      />
 
       {isSelected && (
         <>
@@ -924,27 +999,6 @@ function WallShape({
             lineCap="square"
             dash={[6 / scale, 4 / scale]}
             listening={false}
-          />
-
-          <Circle
-            x={wall.start.x} y={wall.start.y}
-            radius={7 / scale} fill="#FF6B35" stroke="#FFF" strokeWidth={2 / scale}
-            draggable
-            onDragStart={(e) => { e.cancelBubble = true; onPointDragStart('start'); }}
-            onDragMove={(e) => { e.cancelBubble = true; onPointDragMove('start', e); }}
-            onDragEnd={(e) => { e.cancelBubble = true; onPointDragEnd(); }}
-            onMouseEnter={(e) => { const stage = e.target.getStage(); if (stage) stage.container().style.cursor = 'crosshair'; }}
-            onMouseLeave={(e) => { const stage = e.target.getStage(); if (stage) stage.container().style.cursor = 'move'; }}
-          />
-          <Circle
-            x={wall.end.x} y={wall.end.y}
-            radius={7 / scale} fill="#FF6B35" stroke="#FFF" strokeWidth={2 / scale}
-            draggable
-            onDragStart={(e) => { e.cancelBubble = true; onPointDragStart('end'); }}
-            onDragMove={(e) => { e.cancelBubble = true; onPointDragMove('end', e); }}
-            onDragEnd={(e) => { e.cancelBubble = true; onPointDragEnd(); }}
-            onMouseEnter={(e) => { const stage = e.target.getStage(); if (stage) stage.container().style.cursor = 'crosshair'; }}
-            onMouseLeave={(e) => { const stage = e.target.getStage(); if (stage) stage.container().style.cursor = 'move'; }}
           />
 
           <Group
@@ -991,13 +1045,15 @@ function WallShape({
 }
 
 function FurnitureShape({
-  item, isSelected, isBoxSelected, scale, onSelect, onDragEnd, onRotate, onResize,
+  item, isSelected, isBoxSelected, scale, toolMode, onSelect, onDragMove, onDragEnd, onRotate, onResize,
 }: {
   item: PlacedFurniture;
   isSelected: boolean;
   isBoxSelected: boolean;
   scale: number;
+  toolMode: string;
   onSelect: () => void;
+  onDragMove: (e: KonvaEventObject<DragEvent>) => void;
   onDragEnd: (e: KonvaEventObject<DragEvent>) => void;
   onRotate: (angle: number) => void;
   onResize: (width: number, depth: number) => void;
@@ -1006,6 +1062,7 @@ function FurnitureShape({
   const d = item.depth;
   const handleSize = 8 / scale;
   const highlighted = isSelected || isBoxSelected;
+  const isWallMode = toolMode === 'wall';
 
   return (
     <Group
@@ -1014,9 +1071,11 @@ function FurnitureShape({
       rotation={item.rotation}
       offsetX={w / 2}
       offsetY={d / 2}
-      draggable
+      draggable={!isWallMode}
+      listening={!isWallMode}
       onClick={(e) => { e.cancelBubble = true; onSelect(); }}
       onTap={onSelect}
+      onDragMove={onDragMove}
       onDragEnd={onDragEnd}
     >
       {item.shape === 'circle' ? (
@@ -1065,40 +1124,35 @@ function FurnitureShape({
 
       {isSelected && (
         <>
-          <Rect x={-handleSize / 2} y={-handleSize / 2} width={handleSize} height={handleSize}
-            fill="#FF6B35" stroke="#FFF" strokeWidth={1 / scale}
+          {/* 右边缘 - 水平调整 */}
+          <Rect x={w - 4 / scale} y={0} width={8 / scale} height={d}
+            fill="transparent"
             draggable
             onDragMove={(e) => {
               const node = e.target;
-              const newX = node.x() + handleSize / 2;
-              const newW = Math.max(20, w + (newX - 0));
+              const newW = Math.max(20, node.x() + 4 / scale);
               onResize(newW, d);
-              node.x(-handleSize / 2);
-              node.y(-handleSize / 2);
+              node.x(w - 4 / scale);
+              node.y(0);
             }}
+            onMouseEnter={(e) => { const stage = e.target.getStage(); if (stage) stage.container().style.cursor = 'ew-resize'; }}
+            onMouseLeave={(e) => { const stage = e.target.getStage(); if (stage) stage.container().style.cursor = 'default'; }}
           />
-          <Rect x={w - handleSize / 2} y={-handleSize / 2} width={handleSize} height={handleSize}
-            fill="#FF6B35" stroke="#FFF" strokeWidth={1 / scale}
+          {/* 下边缘 - 垂直调整 */}
+          <Rect x={0} y={d - 4 / scale} width={w} height={8 / scale}
+            fill="transparent"
             draggable
             onDragMove={(e) => {
               const node = e.target;
-              const newW = Math.max(20, node.x() + handleSize / 2);
-              onResize(newW, d);
-              node.x(w - handleSize / 2);
-              node.y(-handleSize / 2);
-            }}
-          />
-          <Rect x={-handleSize / 2} y={d - handleSize / 2} width={handleSize} height={handleSize}
-            fill="#FF6B35" stroke="#FFF" strokeWidth={1 / scale}
-            draggable
-            onDragMove={(e) => {
-              const node = e.target;
-              const newD = Math.max(20, node.y() + handleSize / 2);
+              const newD = Math.max(20, node.y() + 4 / scale);
               onResize(w, newD);
-              node.x(-handleSize / 2);
-              node.y(d - handleSize / 2);
+              node.x(0);
+              node.y(d - 4 / scale);
             }}
+            onMouseEnter={(e) => { const stage = e.target.getStage(); if (stage) stage.container().style.cursor = 'ns-resize'; }}
+            onMouseLeave={(e) => { const stage = e.target.getStage(); if (stage) stage.container().style.cursor = 'default'; }}
           />
+          {/* 右下角 resize handle */}
           <Rect x={w - handleSize / 2} y={d - handleSize / 2} width={handleSize} height={handleSize}
             fill="#FF6B35" stroke="#FFF" strokeWidth={1 / scale}
             draggable
@@ -1110,21 +1164,9 @@ function FurnitureShape({
               node.x(w - handleSize / 2);
               node.y(d - handleSize / 2);
             }}
+            onMouseEnter={(e) => { const stage = e.target.getStage(); if (stage) stage.container().style.cursor = 'nwse-resize'; }}
+            onMouseLeave={(e) => { const stage = e.target.getStage(); if (stage) stage.container().style.cursor = 'default'; }}
           />
-
-          <Line points={[w / 2, 0, w / 2, -25 / scale]} stroke="#FF6B35" strokeWidth={1.5 / scale} dash={[4 / scale, 2 / scale]} />
-          <Circle
-            x={w / 2} y={-25 / scale}
-            radius={8 / scale}
-            fill="#FF6B35"
-            stroke="#FFF"
-            strokeWidth={1.5 / scale}
-            onClick={(e) => {
-              e.cancelBubble = true;
-              onRotate(item.rotation + 45);
-            }}
-          />
-          <Text text="↻" x={w / 2 - 5 / scale} y={-30 / scale} fontSize={11 / scale} fill="#FFF" />
 
           <Group
             x={w + 5 / scale} y={-5 / scale}
