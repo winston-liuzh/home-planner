@@ -13,17 +13,20 @@ export default function App() {
   const wallCount = usePlannerStore((s) => s.project.rooms.reduce((n, r) => n + r.walls.length, 0));
   const dirty = usePlannerStore((s) => s.dirty);
 
-  // 退出前提示保存
+  // 退出前提示：项目有内容时拦截浏览器关闭
   useEffect(() => {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (dirty) {
+      const state = usePlannerStore.getState();
+      const hasContent = state.project.furniture.length > 0 ||
+        state.project.rooms.some(r => r.walls.length > 0);
+      if (hasContent) {
         e.preventDefault();
         e.returnValue = '';
       }
     };
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [dirty]);
+  }, []);
 
   return (
     <div className="app">
